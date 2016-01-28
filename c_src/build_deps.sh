@@ -35,7 +35,7 @@ MAKE=${MAKE:-make}
 
 
 if [ "${MACHINE}" = "armv7l" ]; then
-	ROCKSDB_VSN="fix/pi2"
+	ROCKSDB_VSN="master"
 	ROCKSDB_URL="git://github.com/benoitc/rocksdb.git"
 fi
 
