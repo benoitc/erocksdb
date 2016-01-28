@@ -8,6 +8,7 @@ if [ `uname -s` = 'SunOS' -a "${POSIX_SHELL}" != "true" ]; then
 fi
 unset POSIX_SHELL # clear it so if we invoke other scripts, they run as ksh as well
 
+ROCKSDB_URL="git://github.com/facebook/rocksdb"
 ROCKSDB_VSN="rocksdb-4.1"
 
 SNAPPY_VSN="1.1.1"
@@ -29,6 +30,14 @@ which gmake 1>/dev/null 2>/dev/null && MAKE=gmake
 MAKE=${MAKE:-make}
 
 # Changed "make" to $MAKE
+
+[ "$MACHINE" ] || MACHINE=`(uname -m) 2>/dev/null`  || MACHINE="unknown"
+
+
+if [ "${MACHINE}" = "armv7l" ]; then
+	ROCKSDB_VSN="fix/pi2"
+	ROCKSDB_URL="git://github.com/benoitc/rocksdb.git"
+fi
 
 case "$1" in
     rm-deps)
@@ -73,11 +82,11 @@ case "$1" in
         export LD_LIBRARY_PATH="$BASEDIR/system/lib:$LD_LIBRARY_PATH"
 
         if [ ! -d rocksdb ]; then
-            git clone git://github.com/facebook/rocksdb
+            git clone $ROCKSDB_URL 
             (cd rocksdb && git checkout $ROCKSDB_VSN)
         fi
         if [ ! -f rocksdb/librocksdb.a ]; then
-            (cd rocksdb && CXXFLAGS=-fPIC $MAKE static_lib)
+            (cd rocksdb && PORTABLE=1 CXXFLAGS=-fPIC $MAKE static_lib)
         fi
         ;;
 esac

@@ -26,7 +26,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 cacheleak_test_() ->
-    {timeout, 10*60, fun() ->
+    {timeout, 10*380, fun() ->
                               [] = os:cmd("rm -rf /tmp/erocksdb.cacheleak.test"),
                               Blobs = [{<<I:128/unsigned>>, compressible_bytes(10240)} ||
                                           I <- lists:seq(1, 10000)],
