@@ -1,4 +1,6 @@
 BUILD_CONFIG = make_config.mk
+REBAR ?= rebar3
+
 
 all: compile test
 
@@ -10,10 +12,10 @@ rm-deps:
 
 compile:
 	./c_src/build_deps.sh
-	PLATFORM_LDFLAGS="`cat c_src/rocksdb/${BUILD_CONFIG} |grep PLATFORM_LDFLAGS| awk -F= '{print $$2}'|sed -e 's/-lsnappy//'`" ./rebar compile
+	PLATFORM_LDFLAGS="`cat c_src/rocksdb/${BUILD_CONFIG} |grep PLATFORM_LDFLAGS| awk -F= '{print $$2}'|sed -e 's/-lsnappy//'`" $(REBAR) compile
 
 test: compile
-	./rebar eunit
+	$(REBAR) eunit
 
 clean:
-	./rebar clean
+	$(REBAR) clean
