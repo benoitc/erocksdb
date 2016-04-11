@@ -24,11 +24,11 @@
 %%======================================================================
 -module(erocksdb).
 
--export([open/3, open_with_cf/3, close/1]).
+-export([open/2, open/3, open_with_cf/3, close/1]).
+-export([list_column_families/2,create_column_family/3, drop_column_family/1]).
 -export([snapshot/1, release_snapshot/1]).
--export([list_column_families/2, create_column_family/3, drop_column_family/2]).
 -export([put/4, put/5, delete/3, delete/4, write/3, get/3, get/4]).
--export([iterator/2, iterator/3, iterator_with_cf/3, iterator_move/2, iterator_close/1]).
+-export([iterator/2, iterator/3, iterators/3, iterators/4, iterator_move/2, iterator_close/1]).
 -export([fold/4, fold/5, fold_keys/4, fold_keys/5]).
 -export([destroy/2, repair/2, is_empty/1]).
 -export([checkpoint/2]).
@@ -194,18 +194,17 @@ init() ->
              {ok, db_handle()} | {error, any()} when Name::file:filename_all(),
                                                      DBOpts::db_options(),
                                                      CFOpts::cf_options()).
-open(_Name, _DBOpts, _CFOpts) ->
+
+open(_Name, _DbOpts) ->
     erlang:nif_error({error, not_loaded}).
 
-%% @doc
-%% Open RocksDB with the specified column families
--spec(open_with_cf(Name, DBOpts, CFDescriptors) ->
-             {ok, db_handle(), list(cf_handle())} | {error, any()}
-               when Name::file:filename_all(),
-                    DBOpts :: db_options(),
-                    CFDescriptors :: list(#cf_descriptor{})).
-open_with_cf(_Name, _DBOpts, _CFDescriptors) ->
-    {error, not_implemeted}.
+open(Name, DbOpts, CfDescriptors) ->
+    open(Name, DbOpts ++ CfDescriptors).
+
+open_with_cf(_Name, _DbOpts, _CfDescriptors) ->
+    erlang:nif_error({error, not_loaded}).
+
+
 
 %% @doc
 %% Close RocksDB
@@ -213,6 +212,32 @@ open_with_cf(_Name, _DBOpts, _CFDescriptors) ->
              ok | {error, any()} when DBHandle::db_handle()).
 close(_DBHandle) ->
     erlang:nif_error({error, not_loaded}).
+
+%% @doc List column families
+-spec(list_column_families(Name, DBOpts) -> {ok, list(string())} | {error, any()}
+        when Name::file:filename_all(),
+             DBOpts::db_options()).
+list_column_families(_Name, _DbOpts) ->
+    erlang:nif_error({error, not_loaded}).
+
+
+%% @doc
+%% Create a new column family
+-spec(create_column_family(DBHandle, Name, CFOpts) ->
+             {ok, cf_handle()} | {error, any()} when DBHandle::db_handle(),
+                                                     Name::string(),
+                                                     CFOpts::cf_options()).
+create_column_family(_DBHandle, _Name, _CFOpts) ->
+    erlang:nif_error({error, not_loaded}).
+
+%% @doc
+%% Drop a column family
+-spec(drop_column_family(CFHandle) ->
+             ok | {error, any()} when  CFHandle::cf_handle()).
+drop_column_family(_CFHandle) ->
+    erlang:nif_error({error, not_loaded}).
+
+
 
 %% @doc take a snapshot of a running RocksDB database in a separate directory
 %% http://rocksdb.org/blog/2609/use-checkpoints-for-efficient-snapshots/
@@ -234,30 +259,7 @@ snapshot(_DbHandle) ->
 release_snapshot(_SnapshotHandle) ->
     erlang:nif_error({error, not_loaded}).
 
-%% @doc
-%% List column families
--spec(list_column_families(Name, DBOpts) ->
-             {ok, list(string())} | {error, any()} when Name::file:filename_all(),
-                                                        DBOpts::db_options()).
-list_column_families(_Name, _DBOpts) ->
-    {error, not_implemeted}.
 
-%% @doc
-%% Create a new column family
--spec(create_column_family(DBHandle, Name, CFOpts) ->
-             {ok, cf_handle()} | {error, any()} when DBHandle::db_handle(),
-                                                     Name::string(),
-                                                     CFOpts::cf_options()).
-create_column_family(_DBHandle, _Name, _CFOpts) ->
-    {error, not_implemeted}.
-
-%% @doc
-%% Drop a column family
--spec(drop_column_family(DBHandle, CFHandle) ->
-             ok | {error, any()} when DBHandle::db_handle(),
-                                      CFHandle::cf_handle()).
-drop_column_family(_DBHandle, _CFHandle) ->
-    {error, not_implemeted}.
 
 %% @doc
 %% Put a key/value pair into the default column family
@@ -277,8 +279,8 @@ put(DBHandle, Key, Value, WriteOpts) ->
                                       Key::binary(),
                                       Value::binary(),
                                       WriteOpts::write_options()).
-put(_DBHandle, _CFHandle, _Key, _Value, _WriteOpts) ->
-    {error, not_implemeted}.
+put(DBHandle, CFHandle, Key, Value, WriteOpts) ->
+    write(DBHandle, [{put, CFHandle, Key, Value}], WriteOpts).
 
 %% @doc
 %% Delete a key/value pair in the default column family
@@ -296,8 +298,8 @@ delete(DBHandle, Key, WriteOpts) ->
                                       CFHandle::cf_handle(),
                                       Key::binary(),
                                       WriteOpts::write_options()).
-delete(_DBHandle, _CFHandle, _Key, _WriteOpts) ->
-    {error, not_implemeted}.
+delete(DBHandle, CFHandle, Key, WriteOpts) ->
+    write(DBHandle, [{delete, CFHandle, Key}], WriteOpts).
 
 %% @doc
 %% Apply the specified updates to the database.
@@ -327,7 +329,7 @@ get(_DBHandle, _Key, _ReadOpts) ->
                                                               Key::binary(),
                                                               ReadOpts::read_options()).
 get(_DBHandle, _CFHandle, _Key, _ReadOpts) ->
-    {error, not_implemeted}.
+    erlang:nif_error({error, not_loaded}).
 
 %% @doc
 %% Return a iterator over the contents of the database.
@@ -344,12 +346,16 @@ iterator(_DBHandle, _ReadOpts, keys_only) ->
 
 %% @doc
 %% Return a iterator over the contents of the specified column family.
--spec(iterator_with_cf(DBHandle, CFHandle, ReadOpts) ->
+-spec(iterators(DBHandle, CFHandle, ReadOpts) ->
              {ok, itr_handle()} | {error, any()} when DBHandle::db_handle(),
                                                       CFHandle::cf_handle(),
                                                       ReadOpts::read_options()).
-iterator_with_cf(_DBHandle, _CFHandle, _ReadOpts) ->
-    {error, not_implemeted}.
+iterators(_DBHandle, _CFHandle, _ReadOpts) ->
+    erlang:nif_error({error, not_loaded}).
+
+iterators(_DBHandle, _CFHandle, _ReadOpts, keys_only) ->
+    erlang:nif_error({error, not_loaded}).
+
 
 
 %% @doc

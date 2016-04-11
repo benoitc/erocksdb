@@ -62,12 +62,18 @@ static ErlNifFunc nif_funcs[] =
 {
     // db operations
     {"close", 1, erocksdb_close, ERL_NIF_DIRTY_JOB_IO_BOUND},
-    {"open", 3, erocksdb_open, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"open", 2, erocksdb_open, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"open_with_cf", 3, erocksdb_open_with_cf, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"status", 2, erocksdb_status},
-    {"destroy", 2, erocksdb_destroy},
-    {"repair", 2, erocksdb_repair},
+    {"destroy", 2, erocksdb_destroy, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"repair", 2, erocksdb_repair, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"is_empty", 1, erocksdb_is_empty},
     {"checkpoint", 2, erocksdb::checkpoint, ERL_NIF_DIRTY_JOB_IO_BOUND},
+
+    // column families
+    {"list_column_families", 2, erocksdb_list_column_families, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"create_column_family", 3, erocksdb::create_column_family, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"drop_column_family", 1, erocksdb::drop_column_family, ERL_NIF_DIRTY_JOB_IO_BOUND},
 
     // snaptshot operation
     {"snapshot", 1, erocksdb::snapshot, ERL_NIF_DIRTY_JOB_CPU_BOUND},
@@ -76,10 +82,13 @@ static ErlNifFunc nif_funcs[] =
     // K/V operations
     {"write", 3, erocksdb::write, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"get", 3, erocksdb::get, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"get", 4, erocksdb::get, ERL_NIF_DIRTY_JOB_IO_BOUND},
 
     // Iterators operations
     {"iterator", 2, erocksdb::iterator, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"iterator", 3, erocksdb::iterator, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"iterators", 3, erocksdb::iterators, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"iterators", 4, erocksdb::iterators, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"iterator_close", 1, erocksdb_iterator_close},
     {"iterator_move", 2, erocksdb::iterator_move, ERL_NIF_DIRTY_JOB_IO_BOUND}
 
@@ -248,9 +257,6 @@ ERL_NIF_TERM ATOM_WRITE_THREADS;
 using std::nothrow;
 
 struct erocksdb_itr_handle;
-
-class erocksdb_thread_pool;
-class erocksdb_priv_data;
 
 
 
@@ -496,18 +502,7 @@ ERL_NIF_TERM parse_db_option(ErlNifEnv* env, ERL_NIF_TERM item, rocksdb::Options
         {
             opts.enable_write_thread_adaptive_yield = (option[1] == erocksdb::ATOM_TRUE);
         }
-    }
-
-    return erocksdb::ATOM_OK;
-}
-
-ERL_NIF_TERM parse_cf_option(ErlNifEnv* env, ERL_NIF_TERM item, rocksdb::Options& opts)
-{
-    int arity;
-    const ERL_NIF_TERM* option;
-    if (enif_get_tuple(env, item, &arity, &option) && 2==arity)
-    {
-        if (option[0] == erocksdb::ATOM_BLOCK_CACHE_SIZE_MB_FOR_POINT_LOOKUP)
+        else if (option[0] == erocksdb::ATOM_BLOCK_CACHE_SIZE_MB_FOR_POINT_LOOKUP)
             // @TODO ignored now
             ;
         else if (option[0] == erocksdb::ATOM_MEMTABLE_MEMORY_BUDGET)
@@ -735,6 +730,207 @@ ERL_NIF_TERM parse_cf_option(ErlNifEnv* env, ERL_NIF_TERM item, rocksdb::Options
     return erocksdb::ATOM_OK;
 }
 
+ERL_NIF_TERM parse_cf_option(ErlNifEnv* env, ERL_NIF_TERM item, rocksdb::ColumnFamilyOptions& opts) {
+    int arity;
+    const ERL_NIF_TERM *option;
+    if (enif_get_tuple(env, item, &arity, &option) && 2 == arity) {
+        if (option[0] == erocksdb::ATOM_BLOCK_CACHE_SIZE_MB_FOR_POINT_LOOKUP)
+            // @TODO ignored now
+            ;
+        else if (option[0] == erocksdb::ATOM_MEMTABLE_MEMORY_BUDGET) {
+            ErlNifUInt64 memtable_memory_budget;
+            if (enif_get_uint64(env, option[1], &memtable_memory_budget))
+                opts.OptimizeLevelStyleCompaction(memtable_memory_budget);
+        }
+        else if (option[0] == erocksdb::ATOM_WRITE_BUFFER_SIZE) {
+            unsigned int write_buffer_size;
+            if (enif_get_uint(env, option[1], &write_buffer_size))
+                opts.write_buffer_size = write_buffer_size;
+        }
+        else if (option[0] == erocksdb::ATOM_MAX_WRITE_BUFFER_NUMBER) {
+            int max_write_buffer_number;
+            if (enif_get_int(env, option[1], &max_write_buffer_number))
+                opts.max_write_buffer_number = max_write_buffer_number;
+        }
+        else if (option[0] == erocksdb::ATOM_MIN_WRITE_BUFFER_NUMBER_TO_MERGE) {
+            int min_write_buffer_number_to_merge;
+            if (enif_get_int(env, option[1], &min_write_buffer_number_to_merge))
+                opts.min_write_buffer_number_to_merge = min_write_buffer_number_to_merge;
+        }
+        else if (option[0] == erocksdb::ATOM_COMPRESSION) {
+            if (option[1] == erocksdb::ATOM_COMPRESSION_TYPE_SNAPPY) {
+                opts.compression = rocksdb::CompressionType::kSnappyCompression;
+            }
+            else if (option[1] == erocksdb::ATOM_COMPRESSION_TYPE_ZLIB) {
+                opts.compression = rocksdb::CompressionType::kZlibCompression;
+            }
+            else if (option[1] == erocksdb::ATOM_COMPRESSION_TYPE_BZIP2) {
+                opts.compression = rocksdb::CompressionType::kBZip2Compression;
+            }
+            else if (option[1] == erocksdb::ATOM_COMPRESSION_TYPE_LZ4) {
+                opts.compression = rocksdb::CompressionType::kLZ4Compression;
+            }
+            else if (option[1] == erocksdb::ATOM_COMPRESSION_TYPE_LZ4H) {
+                opts.compression = rocksdb::CompressionType::kLZ4HCCompression;
+            }
+            else if (option[1] == erocksdb::ATOM_COMPRESSION_TYPE_NONE) {
+                opts.compression = rocksdb::CompressionType::kNoCompression;
+            }
+        }
+        else if (option[0] == erocksdb::ATOM_NUM_LEVELS) {
+            int num_levels;
+            if (enif_get_int(env, option[1], &num_levels))
+                opts.num_levels = num_levels;
+        }
+        else if (option[0] == erocksdb::ATOM_LEVEL0_FILE_NUM_COMPACTION_TRIGGER) {
+            int level0_file_num_compaction_trigger;
+            if (enif_get_int(env, option[1], &level0_file_num_compaction_trigger))
+                opts.level0_file_num_compaction_trigger = level0_file_num_compaction_trigger;
+        }
+        else if (option[0] == erocksdb::ATOM_LEVEL0_SLOWDOWN_WRITES_TRIGGER) {
+            int level0_slowdown_writes_trigger;
+            if (enif_get_int(env, option[1], &level0_slowdown_writes_trigger))
+                opts.level0_slowdown_writes_trigger = level0_slowdown_writes_trigger;
+        }
+        else if (option[0] == erocksdb::ATOM_LEVEL0_STOP_WRITES_TRIGGER) {
+            int level0_stop_writes_trigger;
+            if (enif_get_int(env, option[1], &level0_stop_writes_trigger))
+                opts.level0_stop_writes_trigger = level0_stop_writes_trigger;
+        }
+        else if (option[0] == erocksdb::ATOM_MAX_MEM_COMPACTION_LEVEL) {
+            int max_mem_compaction_level;
+            if (enif_get_int(env, option[1], &max_mem_compaction_level))
+                opts.max_mem_compaction_level = max_mem_compaction_level;
+        }
+        else if (option[0] == erocksdb::ATOM_TARGET_FILE_SIZE_BASE) {
+            ErlNifUInt64 target_file_size_base;
+            if (enif_get_uint64(env, option[1], &target_file_size_base))
+                opts.target_file_size_base = target_file_size_base;
+        }
+        else if (option[0] == erocksdb::ATOM_TARGET_FILE_SIZE_MULTIPLIER) {
+            int target_file_size_multiplier;
+            if (enif_get_int(env, option[1], &target_file_size_multiplier))
+                opts.target_file_size_multiplier = target_file_size_multiplier;
+        }
+        else if (option[0] == erocksdb::ATOM_MAX_BYTES_FOR_LEVEL_BASE) {
+            ErlNifUInt64 max_bytes_for_level_base;
+            if (enif_get_uint64(env, option[1], &max_bytes_for_level_base))
+                opts.max_bytes_for_level_base = max_bytes_for_level_base;
+        }
+        else if (option[0] == erocksdb::ATOM_MAX_BYTES_FOR_LEVEL_MULTIPLIER) {
+            int max_bytes_for_level_multiplier;
+            if (enif_get_int(env, option[1], &max_bytes_for_level_multiplier))
+                opts.max_bytes_for_level_multiplier = max_bytes_for_level_multiplier;
+        }
+        else if (option[0] == erocksdb::ATOM_EXPANDED_COMPACTION_FACTOR) {
+            int expanded_compaction_factor;
+            if (enif_get_int(env, option[1], &expanded_compaction_factor))
+                opts.expanded_compaction_factor = expanded_compaction_factor;
+        }
+        else if (option[0] == erocksdb::ATOM_SOURCE_COMPACTION_FACTOR) {
+            int source_compaction_factor;
+            if (enif_get_int(env, option[1], &source_compaction_factor))
+                opts.source_compaction_factor = source_compaction_factor;
+        }
+        else if (option[0] == erocksdb::ATOM_MAX_GRANDPARENT_OVERLAP_FACTOR) {
+            int max_grandparent_overlap_factor;
+            if (enif_get_int(env, option[1], &max_grandparent_overlap_factor))
+                opts.max_grandparent_overlap_factor = max_grandparent_overlap_factor;
+        }
+        else if (option[0] == erocksdb::ATOM_SOFT_RATE_LIMIT) {
+            double soft_rate_limit;
+            if (enif_get_double(env, option[1], &soft_rate_limit))
+                opts.soft_rate_limit = soft_rate_limit;
+        }
+        else if (option[0] == erocksdb::ATOM_HARD_RATE_LIMIT) {
+            double hard_rate_limit;
+            if (enif_get_double(env, option[1], &hard_rate_limit))
+                opts.hard_rate_limit = hard_rate_limit;
+        }
+        else if (option[0] == erocksdb::ATOM_ARENA_BLOCK_SIZE) {
+            unsigned int arena_block_size;
+            if (enif_get_uint(env, option[1], &arena_block_size))
+                opts.arena_block_size = arena_block_size;
+        }
+        else if (option[0] == erocksdb::ATOM_DISABLE_AUTO_COMPACTIONS) {
+            opts.disable_auto_compactions = (option[1] == erocksdb::ATOM_TRUE);
+        }
+        else if (option[0] == erocksdb::ATOM_PURGE_REDUNDANT_KVS_WHILE_FLUSH) {
+            opts.purge_redundant_kvs_while_flush = (option[1] == erocksdb::ATOM_TRUE);
+        }
+        else if (option[0] == erocksdb::ATOM_COMPACTION_STYLE) {
+            if (option[1] == erocksdb::ATOM_COMPACTION_STYLE_LEVEL) {
+                opts.compaction_style = rocksdb::CompactionStyle::kCompactionStyleLevel;
+            }
+            else if (option[1] == erocksdb::ATOM_COMPACTION_STYLE_UNIVERSAL) {
+                opts.compaction_style = rocksdb::CompactionStyle::kCompactionStyleUniversal;
+            }
+            else if (option[1] == erocksdb::ATOM_COMPACTION_STYLE_FIFO) {
+                opts.compaction_style = rocksdb::CompactionStyle::kCompactionStyleFIFO;
+            }
+            else if (option[1] == erocksdb::ATOM_COMPACTION_STYLE_NONE) {
+                opts.compaction_style = rocksdb::CompactionStyle::kCompactionStyleNone;
+            }
+        }
+        else if (option[0] == erocksdb::ATOM_VERIFY_CHECKSUMS_IN_COMPACTION) {
+            opts.verify_checksums_in_compaction = (option[1] == erocksdb::ATOM_TRUE);
+        }
+        else if (option[0] == erocksdb::ATOM_FILTER_DELETES) {
+            opts.filter_deletes = (option[1] == erocksdb::ATOM_TRUE);
+        }
+        else if (option[0] == erocksdb::ATOM_MAX_SEQUENTIAL_SKIP_IN_ITERATIONS) {
+            ErlNifUInt64 max_sequential_skip_in_iterations;
+            if (enif_get_uint64(env, option[1], &max_sequential_skip_in_iterations))
+                opts.max_sequential_skip_in_iterations = max_sequential_skip_in_iterations;
+        }
+        else if (option[0] == erocksdb::ATOM_INPLACE_UPDATE_SUPPORT) {
+            opts.inplace_update_support = (option[1] == erocksdb::ATOM_TRUE);
+        }
+        else if (option[0] == erocksdb::ATOM_INPLACE_UPDATE_NUM_LOCKS) {
+            unsigned int inplace_update_num_locks;
+            if (enif_get_uint(env, option[1], &inplace_update_num_locks))
+                opts.inplace_update_num_locks = inplace_update_num_locks;
+        }
+        else if (option[0] == erocksdb::ATOM_TABLE_FACTORY_BLOCK_CACHE_SIZE) {
+            ErlNifUInt64 table_factory_block_cache_size;
+            if (enif_get_uint64(env, option[1], &table_factory_block_cache_size)) {
+                rocksdb::BlockBasedTableOptions bbtOpts;
+                bbtOpts.block_cache = rocksdb::NewLRUCache(table_factory_block_cache_size);
+                bbtOpts.filter_policy = std::shared_ptr<const rocksdb::FilterPolicy>(rocksdb::NewBloomFilterPolicy(10));
+
+                opts.table_factory = std::shared_ptr<rocksdb::TableFactory>(
+                        rocksdb::NewBlockBasedTableFactory(bbtOpts));
+            }
+        }
+        else if (option[0] == erocksdb::ATOM_IN_MEMORY_MODE) {
+            if (option[1] == erocksdb::ATOM_TRUE) {
+                // Set recommended defaults
+                opts.prefix_extractor = std::shared_ptr<const rocksdb::SliceTransform>(
+                        rocksdb::NewFixedPrefixTransform(10));
+                opts.table_factory = std::shared_ptr<rocksdb::TableFactory>(rocksdb::NewPlainTableFactory());
+                opts.compression = rocksdb::CompressionType::kNoCompression;
+                opts.memtable_prefix_bloom_bits = 10000000;
+                opts.memtable_prefix_bloom_probes = 6;
+                opts.compaction_style = rocksdb::CompactionStyle::kCompactionStyleUniversal;
+                opts.compaction_options_universal.size_ratio = 10;
+                opts.compaction_options_universal.min_merge_width = 2;
+                opts.compaction_options_universal.max_size_amplification_percent = 50;
+                opts.level0_file_num_compaction_trigger = 0;
+                opts.level0_slowdown_writes_trigger = 8;
+                opts.level0_stop_writes_trigger = 16;
+                opts.bloom_locality = 1;
+                opts.write_buffer_size = 32 << 20;
+                opts.max_write_buffer_number = 2;
+                opts.min_write_buffer_number_to_merge = 1;
+            }
+        }
+    }
+    return erocksdb::ATOM_OK;
+}
+
+
+
+
 ERL_NIF_TERM parse_read_option(ErlNifEnv* env, ERL_NIF_TERM item, rocksdb::ReadOptions& opts)
 {
     int arity;
@@ -804,23 +1000,58 @@ ERL_NIF_TERM write_batch_item(ErlNifEnv* env, ERL_NIF_TERM item, rocksdb::WriteB
         }
 
         ErlNifBinary key, value;
+        erocksdb::ReferencePtr<erocksdb::ColumnFamilyObject> cf_ptr;
 
-        if (action[0] == erocksdb::ATOM_PUT && arity == 3 &&
-            enif_inspect_binary(env, action[1], &key) &&
-            enif_inspect_binary(env, action[2], &value))
+        if (action[0] == erocksdb::ATOM_PUT)
         {
-            rocksdb::Slice key_slice((const char*)key.data, key.size);
-            rocksdb::Slice value_slice((const char*)value.data, value.size);
-            batch.Put(key_slice, value_slice);
-            return erocksdb::ATOM_OK;
+            if(arity == 3  &&
+               enif_inspect_binary(env, action[1], &key) &&
+               enif_inspect_binary(env, action[2], &value))
+            {
+                rocksdb::Slice key_slice((const char*)key.data, key.size);
+                rocksdb::Slice value_slice((const char*)value.data, value.size);
+                batch.Put(key_slice, value_slice);
+                return erocksdb::ATOM_OK;
+            }
+            else
+            {
+                const ERL_NIF_TERM& cf_ref = action[1];
+                cf_ptr.assign(erocksdb::ColumnFamilyObject::RetrieveColumnFamilyObject(env, cf_ref));
+                erocksdb::ColumnFamilyObject* cf = cf_ptr.get();
+
+                if(NULL!=cf_ptr.get() &&
+                   enif_inspect_binary(env, action[2], &key) &&
+                   enif_inspect_binary(env, action[3], &value))
+                {
+                    rocksdb::Slice key_slice((const char*)key.data, key.size);
+                    rocksdb::Slice value_slice((const char*)value.data, value.size);
+                    batch.Put(cf->m_ColumnFamily, key_slice, value_slice);
+                    return erocksdb::ATOM_OK;
+                }
+            }
         }
 
-        if (action[0] == erocksdb::ATOM_DELETE && arity == 2 &&
-            enif_inspect_binary(env, action[1], &key))
+        if (action[0] == erocksdb::ATOM_DELETE)
         {
-            rocksdb::Slice key_slice((const char*)key.data, key.size);
-            batch.Delete(key_slice);
-            return erocksdb::ATOM_OK;
+            if(arity == 2 && enif_inspect_binary(env, action[1], &key))
+            {
+                rocksdb::Slice key_slice((const char*)key.data, key.size);
+                batch.Delete(key_slice);
+                return erocksdb::ATOM_OK;
+            }
+            else
+            {
+                const ERL_NIF_TERM& cf_ref = action[1];
+                cf_ptr.assign(erocksdb::ColumnFamilyObject::RetrieveColumnFamilyObject(env, cf_ref));
+                erocksdb::ColumnFamilyObject* cf = cf_ptr.get();
+
+                if(NULL!=cf_ptr.get() && enif_inspect_binary(env, action[2], &key))
+                {
+                    rocksdb::Slice key_slice((const char*)key.data, key.size);
+                    batch.Delete(cf->m_ColumnFamily, key_slice);
+                    return erocksdb::ATOM_OK;
+                }
+            }
         }
     }
 
@@ -957,13 +1188,36 @@ get(
     const ERL_NIF_TERM argv[])
 {
     const ERL_NIF_TERM& dbh_ref    = argv[0];
-    const ERL_NIF_TERM& key_ref    = argv[1];
-    const ERL_NIF_TERM& opts_ref   = argv[2];
+    ERL_NIF_TERM cf_ref;
+    ERL_NIF_TERM key_ref;
+    ERL_NIF_TERM opts_ref;
+
+    ReferencePtr<DbObject> db_ptr;
+    ReferencePtr<ColumnFamilyObject> cf_ptr;
 
     rocksdb::ReadOptions *opts = new rocksdb::ReadOptions();
 
-    ReferencePtr<DbObject> db_ptr;
+
+    /// retrieve vars
     db_ptr.assign(DbObject::RetrieveDbObject(env, dbh_ref));
+    if(NULL==db_ptr.get())
+        return enif_make_badarg(env);
+
+
+    if(argc  == 3)
+    {
+        key_ref = argv[1];
+        opts_ref = argv[2];
+    }
+    else
+    {
+        cf_ref = argv[1];
+        key_ref = argv[2];
+        opts_ref = argv[3];
+        // we use a column family assign the value
+        cf_ptr.assign(ColumnFamilyObject::RetrieveColumnFamilyObject(env, cf_ref));
+    }
+
 
     if(NULL==db_ptr.get()
        || !enif_is_list(env, opts_ref)
@@ -977,12 +1231,19 @@ get(
         return error_einval(env);
     }
 
+    if(argc > 3) {
+        if(NULL==cf_ptr.get())
+            return enif_make_badarg(env);
+    }
+
+
     ERL_NIF_TERM fold_result;
     fold_result = fold(env, opts_ref, parse_read_option, *opts);
     if(fold_result!=ATOM_OK)
     {
         return enif_make_badarg(env);
     }
+
 
     // convert key to string
     ErlNifBinary key;
@@ -995,7 +1256,17 @@ get(
     std::string value;
     rocksdb::Slice key_slice(m_Key);
 
-    rocksdb::Status status = db_ptr->m_Db->Get(*opts, key_slice, &value);
+    rocksdb::Status status;
+    if(argc==3)
+    {
+        status = db_ptr->m_Db->Get(*opts, key_slice, &value);
+    }
+    else
+    {
+        ColumnFamilyObject* cf = cf_ptr.get();
+        status = db_ptr->m_Db->Get(*opts, cf->m_ColumnFamily, key_slice, &value);
+    }
+
     if (!status.ok())
     {
         return ATOM_NOT_FOUND;
@@ -1023,7 +1294,6 @@ iterator(
     ReferencePtr<DbObject> db_ptr;
     db_ptr.assign(DbObject::RetrieveDbObject(env, dbh_ref));
 
-
     if(NULL==db_ptr.get()
        || !enif_is_list(env, options_ref))
      {
@@ -1043,7 +1313,7 @@ iterator(
     rocksdb::Iterator * iterator;
 
     iterator = db_ptr->m_Db->NewIterator(*opts);
-    itr_ptr = ItrObject::CreateItrObject(db_ptr.get(), iterator, keys_only, opts);
+    itr_ptr = ItrObject::CreateItrObject(db_ptr.get(), iterator, keys_only);
 
     ERL_NIF_TERM result = enif_make_resource(env, itr_ptr);
 
@@ -1053,6 +1323,72 @@ iterator(
 
     return enif_make_tuple2(env, ATOM_OK, result);
 }   // iterator
+
+ERL_NIF_TERM
+iterators(
+    ErlNifEnv* env,
+    int argc,
+    const ERL_NIF_TERM argv[])
+{
+
+    const ERL_NIF_TERM& dbh_ref     = argv[0];
+    const ERL_NIF_TERM& cfs_ref = argv[1];
+    const ERL_NIF_TERM& options_ref = argv[2];
+    const bool keys_only = ((argc == 4) && (argv[3] == ATOM_KEYS_ONLY));
+
+    rocksdb::ReadOptions *opts = new rocksdb::ReadOptions();
+
+    ReferencePtr<DbObject> db_ptr;
+    db_ptr.assign(DbObject::RetrieveDbObject(env, dbh_ref));
+
+
+    if(NULL==db_ptr.get() ||
+       !enif_is_list(env, options_ref) ||
+       !enif_is_list(env, cfs_ref))
+    {
+       return enif_make_badarg(env);
+    }
+
+    if(NULL == db_ptr->m_Db)
+        return error_einval(env);
+
+    // parse options
+    fold(env, options_ref, parse_read_option, *opts);
+    std::vector<rocksdb::ColumnFamilyHandle*> column_families;
+    std::vector<ColumnFamilyObject*> cf_objects;
+
+    ERL_NIF_TERM head, tail = cfs_ref;
+    while(enif_get_list_cell(env, tail, &head, &tail))
+    {
+        ReferencePtr<ColumnFamilyObject> cf_ptr;
+        cf_ptr.assign(ColumnFamilyObject::RetrieveColumnFamilyObject(env, head));
+        ColumnFamilyObject* cf = cf_ptr.get();
+        column_families.push_back(cf->m_ColumnFamily);
+        cf_objects.push_back(cf);
+    }
+
+    std::vector<rocksdb::Iterator*> iterators;
+    db_ptr->m_Db->NewIterators(*opts, column_families, &iterators);
+
+    ERL_NIF_TERM result = enif_make_list(env, 0);
+    try {
+        for (size_t i = 0; i < iterators.size(); i++) {
+            ItrObject * itr_ptr;
+            ColumnFamilyObject* cf = cf_objects[i];
+            itr_ptr = ItrObject::CreateItrObject(db_ptr.get(), iterators[i], keys_only, cf);
+            ERL_NIF_TERM itr_res = enif_make_resource(env, itr_ptr);
+            result = enif_make_list_cell(env, itr_res, result);
+            enif_release_resource(itr_ptr);
+        }
+    } catch (const std::exception& e) {
+        // pass through and return nullptr
+    }
+    opts=NULL;
+    ERL_NIF_TERM result_out;
+    enif_make_reverse_list(env, result, &result_out);
+
+    return enif_make_tuple2(env, erocksdb::ATOM_OK, result_out);
+}
 
 
 ERL_NIF_TERM
@@ -1161,12 +1497,102 @@ checkpoint(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 }   // checkpoint
 
 
+ERL_NIF_TERM
+create_column_family(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    ReferencePtr<DbObject> db_ptr;
+    const ERL_NIF_TERM& handle_ref = argv[0];
+    db_ptr.assign(DbObject::RetrieveDbObject(env, handle_ref));
+
+    if(NULL==db_ptr.get())
+    {
+        return enif_make_badarg(env);
+    }
+
+    char cf_name[4096];
+    rocksdb::ColumnFamilyOptions *opts = new rocksdb::ColumnFamilyOptions;
+    if(!enif_get_string(env, argv[1], cf_name, sizeof(cf_name), ERL_NIF_LATIN1) ||
+       !enif_is_list(env, argv[2]))
+    {
+        return enif_make_badarg(env);
+    }
+
+    ERL_NIF_TERM result = fold(env, argv[2], parse_cf_option, *opts);
+    if (result != erocksdb::ATOM_OK)
+    {
+        return result;
+    }
+
+    rocksdb::ColumnFamilyHandle* handle;
+    rocksdb::Status status;
+    status = db_ptr->m_Db->CreateColumnFamily(*opts, cf_name, &handle);
+
+    if (status.ok())
+    {
+        ColumnFamilyObject * handle_ptr = ColumnFamilyObject::CreateColumnFamilyObject(db_ptr.get(), handle);
+        ERL_NIF_TERM result = enif_make_resource(env, handle_ptr);
+        enif_release_resource(handle_ptr);
+        return enif_make_tuple2(env, ATOM_OK, result);
+    }
+
+    return error_tuple(env, ATOM_ERROR, status);
+}   // create_column_family
+
+ERL_NIF_TERM
+drop_column_family(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    ReferencePtr<ColumnFamilyObject> cf_ptr;
+    const ERL_NIF_TERM& cf_ref = argv[0];
+    cf_ptr.assign(ColumnFamilyObject::RetrieveColumnFamilyObject(env, cf_ref));
+
+    if(NULL==cf_ptr.get())
+    {
+        return enif_make_badarg(env);
+    }
+
+     // release snapshot object
+    ColumnFamilyObject* cf = cf_ptr.get();
+    rocksdb::Status status = cf->m_DbPtr->m_Db->DropColumnFamily(cf->m_ColumnFamily);
+    if(status.ok())
+    {
+        // set closing flag
+        ErlRefObject::InitiateCloseRequest(cf);
+        return ATOM_OK;
+
+    }
+
+    return error_tuple(env, ATOM_ERROR, status);
+}   // drop_column_family
+
 } // namespace erocksdb
 
 
-/***
- * HEY YOU, please convert this to an async operation
- */
+ERL_NIF_TERM
+parse_cf_descriptor(ErlNifEnv* env, ERL_NIF_TERM item,
+                    std::vector<rocksdb::ColumnFamilyDescriptor>& column_families)
+{
+    char cf_name[4096];
+    rocksdb::ColumnFamilyOptions *opts = new rocksdb::ColumnFamilyOptions;
+    int arity;
+    const ERL_NIF_TERM *cf;
+
+    if (enif_get_tuple(env, item, &arity, &cf) && 2 == arity) {
+        if(!enif_get_string(env, cf[0], cf_name, sizeof(cf_name), ERL_NIF_LATIN1) ||
+           !enif_is_list(env, cf[1]))
+        {
+            return enif_make_badarg(env);
+        }
+        ERL_NIF_TERM result = fold(env, cf[1], parse_cf_option, *opts);
+        if (result != erocksdb::ATOM_OK)
+        {
+            return result;
+        }
+
+        column_families.push_back(rocksdb::ColumnFamilyDescriptor(cf_name, *opts));
+    }
+
+    return erocksdb::ATOM_OK;
+}
 
 ERL_NIF_TERM
 erocksdb_open(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
@@ -1176,31 +1602,96 @@ erocksdb_open(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     rocksdb::DB *db(0);
 
     if(!enif_get_string(env, argv[0], db_name, sizeof(db_name), ERL_NIF_LATIN1) ||
-       !enif_is_list(env, argv[1]) ||
-       !enif_is_list(env, argv[2]))
+       !enif_is_list(env, argv[1]))
     {
         return enif_make_badarg(env);
     }
 
+    if((argc == 3) && !enif_is_list(env, argv[2]))
+    {
+        return enif_make_badarg(env);
+    }
+
+    // parse main db options
     rocksdb::Options *opts = new rocksdb::Options;
     fold(env, argv[1], parse_db_option, *opts);
-    fold(env, argv[2], parse_cf_option, *opts);
 
     rocksdb::Status status = rocksdb::DB::Open(*opts, db_name, &db);
-
     if(!status.ok())
         return error_tuple(env, erocksdb::ATOM_ERROR_DB_OPEN, status);
 
     db_ptr = erocksdb::DbObject::CreateDbObject(db, opts);
-
-    // create a resource reference to send erlang
     ERL_NIF_TERM result = enif_make_resource(env, db_ptr);
+    enif_release_resource(db_ptr);
+    return enif_make_tuple2(env, erocksdb::ATOM_OK, result);
+
+
+} // erocksdb_open
+
+ERL_NIF_TERM
+erocksdb_open_with_cf(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    char db_name[4096];
+    erocksdb::DbObject * db_ptr;
+    rocksdb::DB *db(0);
+
+    if(!enif_get_string(env, argv[0], db_name, sizeof(db_name), ERL_NIF_LATIN1) ||
+       !enif_is_list(env, argv[1]) || !enif_is_list(env, argv[2]))
+    {
+        return enif_make_badarg(env);
+    }
+
+    // parse main db options
+    rocksdb::Options *opts = new rocksdb::Options;
+    fold(env, argv[1], parse_db_option, *opts);
+
+    std::vector<rocksdb::ColumnFamilyDescriptor> column_families;
+
+    ERL_NIF_TERM head, tail = argv[2];
+    while(enif_get_list_cell(env, tail, &head, &tail))
+    {
+        ERL_NIF_TERM result = parse_cf_descriptor(env, head, column_families);
+        if (result != erocksdb::ATOM_OK)
+        {
+            return result;
+        }
+    }
+
+    std::vector<rocksdb::ColumnFamilyHandle*> handles;
+    rocksdb::Status status = rocksdb::DB::Open(*opts, db_name, column_families, &handles, &db);
+
+    if(!status.ok())
+        return error_tuple(env, erocksdb::ATOM_ERROR_DB_OPEN, status);
+
+    // create db respirce
+    db_ptr = erocksdb::DbObject::CreateDbObject(db, opts);
+    ERL_NIF_TERM result = enif_make_resource(env, db_ptr);
+
+    unsigned int num_cols;
+    enif_get_list_length(env, argv[2], &num_cols);
+
+    ERL_NIF_TERM cf_list = enif_make_list(env, 0);
+    try {
+        for (int i = 0; i < num_cols; ++i)
+        {
+            erocksdb::ColumnFamilyObject * handle_ptr;
+            handle_ptr = erocksdb::ColumnFamilyObject::CreateColumnFamilyObject(db_ptr, handles[i]);
+            ERL_NIF_TERM cf = enif_make_resource(env, handle_ptr);
+            enif_release_resource(handle_ptr);
+            handle_ptr = NULL;
+            cf_list = enif_make_list_cell(env, cf, cf_list);
+        }
+    } catch (const std::exception& e) {
+        // pass through
+    }
     // clear the automatic reference from enif_alloc_resource in CreateDbObject
     enif_release_resource(db_ptr);
 
-    return enif_make_tuple2(env, erocksdb::ATOM_OK, result);
-} // erocksdb_open
+    ERL_NIF_TERM cf_list_out;
+    enif_make_reverse_list(env, cf_list, &cf_list_out);
 
+    return enif_make_tuple3(env, erocksdb::ATOM_OK, result, cf_list_out);
+} // erocksdb_open
 
 ERL_NIF_TERM
 erocksdb_close(
@@ -1212,16 +1703,13 @@ erocksdb_close(
     ERL_NIF_TERM ret_term;
 
     ret_term=erocksdb::ATOM_OK;
-
     db_ptr=erocksdb::DbObject::RetrieveDbObject(env, argv[0]);
 
     if (NULL!=db_ptr)
     {
         // set closing flag
         erocksdb::ErlRefObject::InitiateCloseRequest(db_ptr);
-
         db_ptr=NULL;
-
         ret_term=erocksdb::ATOM_OK;
     }   // if
     else
@@ -1232,6 +1720,45 @@ erocksdb_close(
     return(ret_term);
 
 }  // erocksdb_close
+
+
+ERL_NIF_TERM
+erocksdb_list_column_families(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    char db_name[4096];
+
+    if(!enif_get_string(env, argv[0], db_name, sizeof(db_name), ERL_NIF_LATIN1) ||
+       !enif_is_list(env, argv[1]))
+    {
+        return enif_make_badarg(env);
+    }
+
+    // parse main db options
+    rocksdb::Options *opts = new rocksdb::Options;
+    fold(env, argv[1], parse_db_option, *opts);
+
+    std::vector<std::string> column_family_names;
+
+    rocksdb::Status status = rocksdb::DB::ListColumnFamilies(*opts, db_name, &column_family_names);
+    if(!status.ok())
+        return error_tuple(env, erocksdb::ATOM_ERROR_DB_OPEN, status);
+
+    ERL_NIF_TERM result = enif_make_list(env, 0);
+    try {
+        for (size_t i = 0; i < column_family_names.size(); i++) {
+            ERL_NIF_TERM cf_name = enif_make_string(env, column_family_names[i].c_str(), ERL_NIF_LATIN1);
+            result = enif_make_list_cell(env, cf_name, result);
+        }
+    } catch (const std::exception& e) {
+        // pass through and return nullptr
+    }
+
+    ERL_NIF_TERM result_out;
+    enif_make_reverse_list(env, result, &result_out);
+
+    return enif_make_tuple2(env, erocksdb::ATOM_OK, result_out);
+
+} // erocksdb_list_column_families
 
 
 ERL_NIF_TERM
@@ -1424,6 +1951,8 @@ try
     erocksdb::DbObject::CreateDbObjectType(env);
     erocksdb::ItrObject::CreateItrObjectType(env);
     erocksdb::SnapshotObject::CreateSnapshotObjectType(env);
+
+    erocksdb::ColumnFamilyObject::CreateColumnFamilyObjectType(env);
 
 // must initialize atoms before processing options
 #define ATOM(Id, Value) { Id = enif_make_atom(env, Value); }
