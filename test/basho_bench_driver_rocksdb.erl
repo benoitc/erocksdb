@@ -27,16 +27,13 @@
 -export([new/1,
          run/4]).
 
--record(state, { db_handle,
-                 filename,
-                 db_options,
-                 cf_options}).
+-record(state, { ref }).
 
 %% ====================================================================
 %% API
 %% ====================================================================
 
-new(_Id) ->
+new(Id) ->
     %% Make sure erocksdb is available
     case code:which(erocksdb) of
         non_existing ->
@@ -47,28 +44,31 @@ new(_Id) ->
             ok
     end,
 
-    %% Get the target directory
-    Dir = basho_bench_config:get(rocksdb_dir, "."),
-    Filename = filename:join(Dir, "test.rocksdb"),
-    ok = filelib:ensure_dir(Filename),
+    Config = basho_bench_config:get(erocksdb_config, [{max_open_files, 50}]),
+    [ok = application:set_env(erocksdb, K, V) || {K, V} <- Config],
 
-    %% Get any erocksdb options
-    DBOptions = basho_bench_config:get(rocksdb_db_options, [{create_if_missing, true}]),
-    CFOptions = basho_bench_config:get(rocksdb_cf_options, []),
-    case erocksdb:open(Filename, DBOptions, CFOptions) of
+    if Id == 1 ->
+        io:format("\n"),
+        io:format("NOTE: rocksdb driver is using separate data\n"),
+        io:format("      directories for each concurrent basho_bench\n"),
+        io:format("      driver instance.\n\n");
+        true ->
+            ok
+    end,
+
+    WorkDir = basho_bench_config:get(rocksdb_work_dir, "/tmp/rocksdb.bb") ++
+        "." ++ integer_to_list(Id),
+    case erocksdb:open(WorkDir, [{create_if_missing, true}] ++ Config) of
         {error, Reason} ->
-            io:format("Failed to open rocksdb in ~s: ~p\n", [Filename, Reason]);
-        {ok, DBHandle}->
-            {ok, #state { db_handle = DBHandle,
-                          filename = Filename,
-                          db_options = DBOptions,
-                          cf_options = CFOptions}}
+            io:format("Failed to open rocksdb in ~s: ~p\n", [WorkDir, Reason]);
+        {ok, Ref} ->
+            {ok, #state { ref = Ref }}
     end.
 
 
 
 run(get, KeyGen, _ValueGen, State) ->
-    case erocksdb:get(State#state.db_handle, KeyGen(), []) of
+    case erocksdb:get(State#state.ref, KeyGen(), []) of
         {ok, _Value} ->
             {ok, State};
         not_found ->
@@ -77,10 +77,30 @@ run(get, KeyGen, _ValueGen, State) ->
             {error, Reason}
     end;
 run(put, KeyGen, ValueGen, State) ->
-    case erocksdb:put(State#state.db_handle, KeyGen(), ValueGen(), []) of
+    print_status(State#state.ref, 1000),
+    case erocksdb:put(State#state.ref, KeyGen(), ValueGen(), []) of
         ok ->
             {ok, State};
         {error, Reason} ->
             {error, Reason}
     end.
 
+print_status(Ref, Count) ->
+    status_counter(Count, fun() ->
+        {ok, S} = erocksdb:status(Ref, <<"rocksdb.stats">>),
+        io:format("~s\n", [S])
+                          end).
+
+status_counter(Max, Fun) ->
+    Curr = case erlang:get(status_counter) of
+               undefined ->
+                   -1;
+               Value ->
+                   Value
+           end,
+    Next = (Curr + 1) rem Max,
+    erlang:put(status_counter, Next),
+    case Next of
+        0 -> Fun(), ok;
+        _ -> ok
+    end.
