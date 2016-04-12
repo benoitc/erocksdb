@@ -25,46 +25,43 @@
 -module(basho_bench_driver_rocksdb).
 
 -export([new/1,
-         run/4]).
+    run/4]).
 
--record(state, { ref }).
+-record(state, {ref}).
 
 %% ====================================================================
 %% API
 %% ====================================================================
 
 new(Id) ->
-    %% Make sure erocksdb is available
-    case code:which(erocksdb) of
-        non_existing ->
-            io:format("~s requires erocksdb to be available on code path.\n",
-                      [?MODULE]),
-            exit(1);
-        _ ->
-            ok
-    end,
-
+    application:load(erocksdb),
     Config = basho_bench_config:get(erocksdb_config, [{max_open_files, 50}]),
     [ok = application:set_env(erocksdb, K, V) || {K, V} <- Config],
 
     if Id == 1 ->
         io:format("\n"),
-        io:format("NOTE: rocksdb driver is using separate data\n"),
+        io:format("NOTE: Erocksdb driver is using separate data\n"),
         io:format("      directories for each concurrent basho_bench\n"),
         io:format("      driver instance.\n\n");
         true ->
             ok
     end,
 
-    WorkDir = basho_bench_config:get(rocksdb_work_dir, "/tmp/rocksdb.bb") ++
+    WorkDir = basho_bench_config:get(erocksdb_work_dir, "/tmp/erocksdb.bb") ++
         "." ++ integer_to_list(Id),
+    case basho_bench_config:get(erocksd_clear_work_dir, false) of
+        true ->
+            io:format("Clearing work dir: " ++ WorkDir ++ "\n"),
+            os:cmd("rm -rf " ++ WorkDir ++ "/*");
+        false ->
+            ok
+    end,
     case erocksdb:open(WorkDir, [{create_if_missing, true}] ++ Config) of
-        {error, Reason} ->
-            io:format("Failed to open rocksdb in ~s: ~p\n", [WorkDir, Reason]);
         {ok, Ref} ->
-            {ok, #state { ref = Ref }}
+            {ok, #state { ref = Ref }};
+        {error, Reason} ->
+            {error, Reason}
     end.
-
 
 
 run(get, KeyGen, _ValueGen, State) ->
