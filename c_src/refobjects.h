@@ -28,6 +28,7 @@
 
 #include "rocksdb/db.h"
 #include "rocksdb/write_batch.h"
+#include "rocksdb/transaction_log.h"
 
 #ifndef INCL_MUTEX_H
     #include "mutex.h"
@@ -182,9 +183,11 @@ public:
     Mutex m_ItrMutex;                         //!< mutex protecting m_ItrList
     Mutex m_SnapshotMutex;                    //!< mutex protecting m_SnapshotList
     Mutex m_ColumnFamilyMutex;                //!< mutex ptotecting m_ColumnFamily
+    Mutex m_TransactionLogMutex;              //!< mutex ptotecting m_TransactionLogList
     std::list<class ItrObject *> m_ItrList;   //!< ItrObjects holding ref count to this
     std::list<class SnapshotObject *> m_SnapshotList;
     std::list<class ColumnFamilyObject *> m_ColumnFamilyList;
+    std::list<class TransactionLogObject *> m_TransactionLogList;
 
 protected:
     static ErlNifResourceType* m_Db_RESOURCE;
@@ -211,6 +214,11 @@ public:
     void AddSnapshotReference(class SnapshotObject *);
 
     void RemoveSnapshotReference(class SnapshotObject *);
+
+    // manual back link to ItrObjects holding reference to this
+    void AddTransactionLogReference(class TransactionLogObject *);
+
+    void RemoveTransactionLogReference(class TransactionLogObject *);
 
     static void CreateDbObjectType(ErlNifEnv * Env);
 
@@ -343,6 +351,44 @@ private:
     ItrObject();
     ItrObject(const ItrObject &);            // no copy
     ItrObject & operator=(const ItrObject &); // no assignment
+};  // class ItrObject
+
+
+/**
+ * Per Iterator object.  Created as erlang reference.
+ */
+class TransactionLogObject : public ErlRefObject
+{
+public:
+    std::unique_ptr<rocksdb::TransactionLogIterator> m_TransactionLogIterator;
+    ReferencePtr<DbObject> m_DbPtr;
+
+protected:
+    static ErlNifResourceType* m_TransactionLog_RESOURCE;
+
+public:
+    TransactionLogObject(DbObject *, std::unique_ptr<rocksdb::TransactionLogIterator>& Iterator);
+
+    virtual ~TransactionLogObject(); // needs to perform free_itr
+
+    virtual void Shutdown();
+
+
+    static void CreateTransactionLogObjectType(ErlNifEnv * Env);
+
+    static TransactionLogObject * CreateTransactionLogObject(DbObject * Db,
+                                                             rocksdb::TransactionLogIterator * Iterator);
+
+
+    static TransactionLogObject * RetrieveTransactionLogObject(ErlNifEnv * Env, const ERL_NIF_TERM & DbTerm,
+                                         bool ItrClosing=false);
+
+    static void TransactionLogObjectResourceCleanup(ErlNifEnv *Env, void * Arg);
+
+private:
+    TransactionLogObject();
+    TransactionLogObject(const TransactionLogObject &);            // no copy
+    TransactionLogObject & operator=(const TransactionLogObject &); // no assignment
 };  // class ItrObject
 
 } // namespace erocksdb

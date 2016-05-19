@@ -77,6 +77,11 @@ static ErlNifFunc nif_funcs[] =
     {"get_approximate_size", 4, erocksdb::GetApproximateSize, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"get_latest_sequence_number", 1, erocksdb::GetLatestSequenceNumber},
 
+    // transactions
+    {"get_updates_since", 2, erocksdb::GetUpdatesSince, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"next_update", 1, erocksdb::TransactionLogIteratorNext, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"close_updates_iterator", 1, erocksdb::TransactionLogIteratorClose, ERL_NIF_DIRTY_JOB_IO_BOUND},
+
     // column families
     {"list_column_families", 2, erocksdb::ListColumnFamilies, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"create_column_family", 3, erocksdb::CreateColumnFamily, ERL_NIF_DIRTY_JOB_IO_BOUND},

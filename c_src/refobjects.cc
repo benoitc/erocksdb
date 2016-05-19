@@ -25,7 +25,7 @@
 #endif
 
 
-
+#include "rocksdb/transaction_log.h"
 #include "rocksdb/cache.h"
 #include "rocksdb/filter_policy.h"
 
@@ -305,6 +305,7 @@ DbObject::Shutdown()
     ItrObject * itr_ptr;
     SnapshotObject * snapshot_ptr;
     ColumnFamilyObject * column_family_ptr;
+    TransactionLogObject * transaction_log_ptr;
 
     do
     {
@@ -379,6 +380,31 @@ DbObject::Shutdown()
         //  RemoveReference
         if (again)
             ColumnFamilyObject::InitiateCloseRequest(column_family_ptr);
+
+    } while(again);
+
+
+    do
+    {
+        again=false;
+        transaction_log_ptr=NULL;
+
+        // lock the ItrList
+        {
+            MutexLock lock(m_TransactionLogMutex);
+
+            if (!m_TransactionLogList.empty())
+            {
+                again=true;
+                transaction_log_ptr=m_TransactionLogList.front();
+                m_TransactionLogList.pop_front();
+            }   // if
+        }
+
+        // must be outside lock so ItrObject can attempt
+        //  RemoveReference
+        if (again)
+            TransactionLogObject::InitiateCloseRequest(transaction_log_ptr);
 
     } while(again);
 
@@ -463,6 +489,27 @@ DbObject::RemoveSnapshotReference(
 
 }   // DbObject::RemoveSnapshotReference
 
+void
+DbObject::AddTransactionLogReference(
+        TransactionLogObject * TransactionLogPtr)
+{
+    MutexLock lock(m_TransactionLogMutex);
+    m_TransactionLogList.push_back(TransactionLogPtr);
+    return;
+}   // DbObject::AddTransactionLogReference
+
+
+void
+DbObject::RemoveTransactionLogReference(
+        TransactionLogObject * TransactionLogPtr)
+{
+    MutexLock lock(m_TransactionLogMutex);
+
+    m_TransactionLogList.remove(TransactionLogPtr);
+
+    return;
+
+}   // DbObject::RemoveTransactionLogReference
 
 /**
  * ColumnFamily object
@@ -766,16 +813,17 @@ SnapshotObject::Shutdown()
     return;
 }   // ItrObject::CloseRequest
 
+
 /**
- * Iterator management object
- */
+* Iterator management object
+*/
 
 ErlNifResourceType * ItrObject::m_Itr_RESOURCE(NULL);
 
 
 void
 ItrObject::CreateItrObjectType(
-    ErlNifEnv * Env)
+        ErlNifEnv * Env)
 {
     ErlNifResourceFlags flags = (ErlNifResourceFlags)(ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER);
 
@@ -790,9 +838,9 @@ ItrObject::CreateItrObjectType(
 
 ItrObject *
 ItrObject::CreateItrObject(
-    DbObject * DbPtr,
-    rocksdb::Iterator * Iterator,
-    bool KeysOnly)
+        DbObject * DbPtr,
+        rocksdb::Iterator * Iterator,
+        bool KeysOnly)
 {
     ItrObject * ret_ptr;
     void * alloc_ptr;
@@ -814,10 +862,10 @@ ItrObject::CreateItrObject(
 
 ItrObject *
 ItrObject::CreateItrObject(
-    DbObject * DbPtr,
-    rocksdb::Iterator * Iterator,
-    bool KeysOnly,
-    ColumnFamilyObject * ColumnFamilyPtr)
+        DbObject * DbPtr,
+        rocksdb::Iterator * Iterator,
+        bool KeysOnly,
+        ColumnFamilyObject * ColumnFamilyPtr)
 {
     ItrObject * ret_ptr;
     void * alloc_ptr;
@@ -840,8 +888,8 @@ ItrObject::CreateItrObject(
 
 ItrObject *
 ItrObject::RetrieveItrObject(
-    ErlNifEnv * Env,
-    const ERL_NIF_TERM & ItrTerm, bool ItrClosing)
+        ErlNifEnv * Env,
+        const ERL_NIF_TERM & ItrTerm, bool ItrClosing)
 {
     ItrObject * ret_ptr;
 
@@ -866,8 +914,8 @@ ItrObject::RetrieveItrObject(
 
 void
 ItrObject::ItrObjectResourceCleanup(
-    ErlNifEnv * Env,
-    void * Arg)
+        ErlNifEnv * Env,
+        void * Arg)
 {
     ItrObject * itr_ptr;
 
@@ -886,10 +934,10 @@ ItrObject::ItrObjectResourceCleanup(
 
 
 ItrObject::ItrObject(
-    DbObject * DbPtr,
-    rocksdb::Iterator * Iterator,
-    bool KeysOnly)
-    : keys_only(KeysOnly), m_Iterator(Iterator), m_DbPtr(DbPtr)
+        DbObject * DbPtr,
+        rocksdb::Iterator * Iterator,
+        bool KeysOnly)
+        : keys_only(KeysOnly), m_Iterator(Iterator), m_DbPtr(DbPtr)
 {
     if (NULL!=DbPtr)
         DbPtr->AddReference(this);
@@ -898,11 +946,11 @@ ItrObject::ItrObject(
 
 
 ItrObject::ItrObject(
-    DbObject * DbPtr,
-    rocksdb::Iterator * Iterator,
-    bool KeysOnly,
-    ColumnFamilyObject * ColumnFamilyPtr)
-    : m_ColumnFamilyPtr(ColumnFamilyPtr), keys_only(KeysOnly), m_Iterator(Iterator), m_DbPtr(DbPtr)
+        DbObject * DbPtr,
+        rocksdb::Iterator * Iterator,
+        bool KeysOnly,
+        ColumnFamilyObject * ColumnFamilyPtr)
+        : m_ColumnFamilyPtr(ColumnFamilyPtr), keys_only(KeysOnly), m_Iterator(Iterator), m_DbPtr(DbPtr)
 {
     if (NULL!=DbPtr)
         DbPtr->AddReference(this);
@@ -943,6 +991,133 @@ ItrObject::Shutdown()
     return;
 
 }   // ItrObject::CloseRequest
+
+
+/**
+* TransactionLogObject management object
+*/
+
+ErlNifResourceType * TransactionLogObject::m_TransactionLog_RESOURCE(NULL);
+
+
+void
+TransactionLogObject::CreateTransactionLogObjectType(
+        ErlNifEnv * Env)
+{
+    ErlNifResourceFlags flags = (ErlNifResourceFlags)(ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER);
+
+    m_TransactionLog_RESOURCE = enif_open_resource_type(Env, NULL, "erocksdb_TransactionLogObject",
+                                             &TransactionLogObject::TransactionLogObjectResourceCleanup,
+                                             flags, NULL);
+
+    return;
+
+}   // TransactionLogObject::CreateTransactionLogObjectType
+
+
+TransactionLogObject *
+TransactionLogObject::CreateTransactionLogObject(
+        DbObject * DbPtr,
+        rocksdb::TransactionLogIterator * Iterator)
+{
+    TransactionLogObject * ret_ptr;
+    void * alloc_ptr;
+
+    // the alloc call initializes the reference count to "one"
+    alloc_ptr=enif_alloc_resource(m_TransactionLog_RESOURCE, sizeof(TransactionLogObject));
+
+    ret_ptr=new (alloc_ptr) TransactionLogObject(DbPtr, Iterator);
+
+    // manual reference increase to keep active until "close" called
+    //  only inc local counter
+    ret_ptr->RefInc();
+
+    // see IterTask::operator() for release of reference count
+
+    return(ret_ptr);
+
+}   // TransactionLogObject::CreateTransactionLogObject
+
+
+TransactionLogObject *
+TransactionLogObject::RetrieveTransactionLogObject(
+        ErlNifEnv * Env,
+        const ERL_NIF_TERM & TransactionLogTerm, bool ItrClosing)
+{
+    TransactionLogObject * ret_ptr;
+
+    ret_ptr=NULL;
+
+    if (enif_get_resource(Env, TransactionLogTerm, m_TransactionLog_RESOURCE, (void **)&ret_ptr))
+    {
+        // has close been requested?
+        if (ret_ptr->m_CloseRequested
+            || (!ItrClosing && ret_ptr->m_DbPtr->m_CloseRequested))
+
+        {
+            // object already closing
+            ret_ptr=NULL;
+        }   // else
+    }   // if
+
+    return(ret_ptr);
+
+}   // TransactionLogObject::RetrieveTransactionLogObject
+
+
+void
+TransactionLogObject::TransactionLogObjectResourceCleanup(
+        ErlNifEnv * Env,
+        void * Arg)
+{
+    TransactionLogObject * itr_ptr;
+
+    itr_ptr=(TransactionLogObject *)Arg;
+
+    // vtable for itr_ptr could be invalid if close already
+    //  occurred
+    InitiateCloseRequest(itr_ptr);
+
+    // YES this can be called after itr_ptr destructor.  Don't panic.
+    AwaitCloseAndDestructor(itr_ptr);
+
+    return;
+
+}   // ItrObject::ItrObjectResourceCleanup
+
+
+TransactionLogObject::TransactionLogObject(
+        DbObject * DbPtr,
+        rocksdb::TransactionLogIterator * Iterator)
+        : m_TransactionLogIterator(Iterator), m_DbPtr(DbPtr)
+{
+    if (NULL!=DbPtr)
+        DbPtr->AddTransactionLogReference(this);
+
+}   // TransactionLogObject::TransactionLogObject
+
+TransactionLogObject::~TransactionLogObject()
+{
+    // not likely to have active reuse item since it would
+    //  block destruction
+    if (NULL!=m_DbPtr.get())
+        m_DbPtr->RemoveTransactionLogReference(this);
+    // do not clean up m_CloseMutex and m_CloseCond
+    return;
+}   // TransactionLogObject::~TransactionLogObject
+
+
+void
+TransactionLogObject::Shutdown()
+{
+    // if there is an active move object, set it up to delete
+    //  (reuse_move holds a counter to this object, which will
+    //   release when move object destructs)
+    RefDec();
+
+    return;
+
+}   // TransactionLogObject::TransactionLogObject
 
 } // namespace erocksdb
 
