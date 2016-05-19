@@ -66,10 +66,8 @@ GetUpdatesSince(
     if(!status.ok())
         return error_tuple(env, ATOM_ERROR, status);
 
-    rocksdb::TransactionLogIterator * itr_ptr = iter.release();
-
     TransactionLogObject * transaction_log_ptr;
-    transaction_log_ptr = TransactionLogObject::CreateTransactionLogObject(db_ptr.get(), itr_ptr);
+    transaction_log_ptr = TransactionLogObject::CreateTransactionLogObject(db_ptr.get(), iter.release());
     ERL_NIF_TERM result = enif_make_resource(env, transaction_log_ptr);
     enif_release_resource(transaction_log_ptr);
     return enif_make_tuple2(env, ATOM_OK, result);
@@ -87,6 +85,7 @@ TransactionLogIteratorNext(
         return enif_make_badarg(env);
 
     auto itr = transaction_log_ptr->m_TransactionLogIterator;
+
     if(!itr->Valid())
         return enif_make_tuple2(env, ATOM_ERROR, ATOM_INVALID_ITERATOR);
 

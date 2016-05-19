@@ -360,14 +360,14 @@ private:
 class TransactionLogObject : public ErlRefObject
 {
 public:
-    std::unique_ptr<rocksdb::TransactionLogIterator> m_TransactionLogIterator;
+    rocksdb::TransactionLogIterator * m_TransactionLogIterator;
     ReferencePtr<DbObject> m_DbPtr;
 
 protected:
     static ErlNifResourceType* m_TransactionLog_RESOURCE;
 
 public:
-    TransactionLogObject(DbObject *, std::unique_ptr<rocksdb::TransactionLogIterator>& Iterator);
+    TransactionLogObject(DbObject *, rocksdb::TransactionLogIterator * Iterator);
 
     virtual ~TransactionLogObject(); // needs to perform free_itr
 
